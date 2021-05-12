@@ -1,0 +1,327 @@
+Bootstrap: docker
+From: ubuntu:20.04
+
+%help
+   This is a container to setup the environment for the GPU_workshop hosted by the NCAR Special Technical Projects team in Q1 of 2021
+
+   Based on Ubuntu 18.04/20.04 OS and the NVIDIA High Performance Computing SDK v20.11
+
+   Container by: G. Dylan Dickerson (gdicker@ucar.edu) and Supreeth Suresh (ssuresh@ucar.edu)
+
+%files
+
+
+%post
+    # For binding on Rescale
+    mkdir -p /enc
+    mkdir -p /temp
+    mkdir -p /dev
+
+    export DEBIAN_FRONTEND=noninteractive
+    export MARCH=znver2
+    apt-get update
+    apt-get install -y apt-utils bash
+    apt-get install -y libgomp1 libmemkind-dev
+    apt-get install -y pkg-config git make cmake automake autotools-dev autoconf \
+                       gcc gfortran libtool intltool flex m4 doxygen libgtest-dev
+    apt-get install -y kmod lmod binutils binutils-dev libc6-dev libev4 libevdev2 \
+                       libevent-dev tzdata numactl libnuma1 libnuma-dev libbsd-dev
+    apt-get install -y ca-certificates openssh-client libcurl4-openssl-dev curl \
+                       wget w3m lynx
+    apt-get install -y file tar bzip2 libbz2-dev zip unzip zlib1g-dev libsz2
+    apt-get install -y vim emacs nano less man bc gdb sudo time
+    apt-get install -y python3 python3-numpy python3-netcdf4 python3-scipy python3-matplotlib \
+                       openjdk-11-jdk openjdk-11-jre perl csh
+    apt-get install -y pciutils libpmi2-0-dev host inetutils-ping
+
+#
+#	Mellanox:
+#
+    export ARG MOFED_VERSION=5.1-2.5.8.0
+
+    cd /usr/local/src
+    wget http://content.mellanox.com/ofed/MLNX_OFED-${MOFED_VERSION}/MLNX_OFED_LINUX-${MOFED_VERSION}-ubuntu20.10-x86_64.tgz
+    tar --no-same-owner -xvf MLNX_OFED_LINUX-${MOFED_VERSION}-ubuntu20.10-x86_64.tgz
+        cd MLNX_OFED_LINUX-${MOFED_VERSION}-ubuntu20.10-x86_64 && \
+        apt-get update && apt-get install -y --no-install-recommends \
+            ./DEBS/libibverbs1_* \
+            ./DEBS/ibverbs-utils* \
+            ./DEBS/ibverbs-providers* \
+            ./DEBS/libibverbs-dev* \
+            ./DEBS/librdmacm-dev* \
+            ./DEBS/librdmacm1*
+
+    apt-get update && apt-get install -y --no-install-recommends \
+		infiniband-diags && \
+
+    apt-get install -y rdma-core rdmacm-utils perftest
+    apt-get install -y nvidia-opencl-dev
+    apt-get update
+
+    export NVHPC_SHORT_VER=20.11
+    export NVHPC_LONG_VER=2020_2011
+    export NVHPC_CUDA_VER=11.1
+    #export NVHPC_CUDA_VER=multi
+    # Install NVHPC for CUDA and PGI compilers
+    mkdir -p /opt/nvidia/hpc_sdk && \
+    cd /opt/nvidia/hpc_sdk && \
+    cd /usr/local/src && \
+    wget -q https://developer.download.nvidia.com/hpc-sdk/${NVHPC_SHORT_VER}/nvhpc_${NVHPC_LONG_VER}_Linux_x86_64_cuda_${NVHPC_CUDA_VER}.tar.gz && \
+    tar xpzf nvhpc_*.tar.gz && \
+    cd nvhpc_*/ && \
+    NVHPC_SILENT=true && \
+    NVHPC_INSTALL_DIR=/opt/nvidia/hpc_sdk && \
+    NVHPC_INSTALL_TYPE="single" && \
+    export NVHPC_ACCEPT_EULA=accept && \
+    ./install && \
+    rm -Rf /usr/local/src/*
+
+    # NVHPC related variables
+    NVCOMPILERS=/opt/nvidia/hpc_sdk/Linux_x86_64/20.11/compilers
+    CUDAPATH=/opt/nvidia/hpc_sdk/Linux_x86_64/20.11/cuda/11.1
+
+    # Update paths
+    if [ -z PATH ] ; then
+        export PATH=$NVCOMPILERS/bin:$CUDAPATH/bin
+    else
+        export PATH=$NVCOMPILERS/bin:$CUDAPATH/bin:$PATH
+    fi
+
+    if [ -z LD_LIBRARY_PATH ]; then
+        export LD_LIBRARY_PATH=$NVCOMPILERS/lib:$CUDAPATH/lib64:/usr/local/lib:/usr/local/lib/openmpi
+    else
+        export LD_LIBRARY_PATH=$NVCOMPILERS/lib:$CUDAPATH/lib64:/usr/local/lib:/usr/local/lib/openmpi:$LD_LIBRARY_PATH
+    fi
+
+    if [ -z MANPATH ]; then
+        export MANPATH=$NVCOMPILERS/man
+    else
+        export MANPATH=$MANPATH:$NVCOMPILERS/man
+    fi
+
+    #
+    # Install GPUdirect:
+    #
+    export GDRCOPY_VERSION=v2.1
+    export CC="gcc"
+    export CXX="g++"
+    export CFLAGS="-m64 -O2 -march=${MARCH}"
+    export CXXFLAGS="-m64 -O2 -march=${MARCH}"
+
+    cd /usr/local/src && \
+       curl -fSsL "https://github.com/NVIDIA/gdrcopy/archive/${GDRCOPY_VERSION}.tar.gz" | tar xz && \
+       cd gdrcopy-* && \
+       export PREFIX=/usr/local && \
+       export DESTLIB=/usr/local/lib && \
+       export CUDA=$CUDAPATH && \
+       #make -j all install && \
+       make -j lib_install && \
+       rm -Rf /usr/local/src/*
+
+
+    #
+    #   UCX:
+    #
+    export UCX_VERSION=1.10.0
+
+    cd /usr/local/src && \
+    curl -fSsL "https://github.com/openucx/ucx/archive/v${UCX_VERSION}.tar.gz" | tar xz && \
+    cd ucx-* && \
+    ./autogen.sh && \
+    #./configure --help 2>&1 | tee /temp/ucx_config.txt && \
+    ./configure      \
+        --prefix=/usr/local          \
+        --enable-shared              \
+        --disable-static             \
+        --disable-doxygen-doc        \
+        --enable-optimizations       \
+        --enable-cma                 \
+        --enable-devel-headers       \
+        --with-cuda=$CUDAPATH        \
+        --with-verbs                 \
+        --with-dm                    \
+        --with-gdrcopy               \
+        --without-java               \
+        --enable-mt                  \
+        --with-mlx5-dv &&            \
+    make -j install && \
+    rm -Rf /usr/local/src/*
+
+
+    export CC="nvc"
+    export CXX="nvc++"
+    export F90="nvf90"
+    export FC="nvfortran"
+    #
+    #       HWLoc:
+    #
+    export HWLOC_SHORT_VERSION=2.3
+    export HWLOC_LONG_VERSION=2.3.0
+    export CC="nvc -noswitcherror"
+    export CFLAGS="-m64 -O2 -march=${MARCH} -Mnodalign -noswitcherror"
+    export CXXFLAGS="-m64 -O2 -march=${MARCH} -Mnodalign"
+    export LDFLAGS="-L/usr/lib/x86_64-linux-gnu -lnuma -L$CUDAPATH/lib64 -L/usr/lib -L/usr/lib64 -latomic"
+
+    cd /usr/local/src && \
+        curl -fSsL "http://www.open-mpi.org/software/hwloc/v${HWLOC_SHORT_VERSION}/downloads/hwloc-${HWLOC_LONG_VERSION}.tar.gz" | tar xz && \
+        cd hwloc-* && \
+        ./configure && \
+        make install && \
+        rm -Rf /usr/local/src/*
+
+
+    #
+    #      PMIx:
+    #
+    #      So far we are disabling the documentation generation to remove a dependency on "pandoc".
+    #
+    export PMIx_VERSION=3.2.1
+    export CFLAGS="-m64 -O2 -march=${MARCH} -Mnodalign -noswitcherror -I/usr/local/src/openpmix-3.2.1 -I/usr/local/src/openpmix-3.2.1/src"
+    export CXXFLAGS="-m64 -O2 -march=${MARCH} -Mnodalign -I/usr/local/src/openpmix-3.2.1 -I/usr/local/src/openpmix-3.2.1/src"
+    cd /usr/local/src && \
+        curl -fSsL "https://github.com/openpmix/openpmix/archive/v${PMIx_VERSION}.tar.gz" | tar xz && \
+        cd openpmix-* && \
+        ./autogen.pl && \
+        ./configure --disable-man-pages \
+                    --prefix=/usr/local && \
+        make all install && \
+        rm -Rf /usr/local/src/*
+
+    #
+    #      OpenMPI:
+    #
+    export OPENMPI_SHORT_VERSION=4.1
+    export OPENMPI_LONG_VERSION=4.1.0
+
+    export  CFLAGS=" -m64 -tp=zen -fpic -Mnodalign -Mautoinline"
+    export  CXXFLAGS=" -m64 -tp=zen -fpic -Mnodalign -Mautoinline"
+    export  FCFLAGS=" -m64 -tp=zen -fpic"
+    export LDFLAGS="-L/usr/lib/x86_64-linux-gnu -lnuma -L$CUDAPATH/lib64 -L/usr/lib -L/usr/lib64 -latomic -ldl"
+                            #--enable-mpi-cxx --enable-mpi-cxx-seek --enable-cxx-exceptions \
+                            #--with-verbs=yes --enable-orterun-prefix-by-default \
+                            #--with-slurm \
+
+    cd /usr/local/src && \
+        curl -fSsL "http://www.open-mpi.org/software/ompi/v${OPENMPI_SHORT_VERSION}/downloads/openmpi-${OPENMPI_LONG_VERSION}.tar.gz" | tar xz && \
+        cd openmpi-* && \
+        ./configure --with-ucx=/usr/local \
+                            --with-ucx-libdir=/usr/local/lib \
+                            --disable-silent-rules \
+                            --enable-shared --disable-static \
+                            --enable-mpi-fortran \
+                            --enable-mpi-cxx --enable-mpi-cxx-seek \
+                            --with-cuda=$CUDAPATH \
+                            --with-verbs=no --enable-orterun-prefix-by-default \
+                            --with-hwloc=/usr/local \
+                            --with-pmix=/usr/local \
+                            --with-zlib \
+                            --enable-mpi1-compatibility \
+                            --prefix=/usr/local && \
+    make -j install && \
+    rm -Rf /usr/local/src/*
+
+    ########FFTW-mpi####
+    export CC="mpicc"
+    export FC="mpif90"
+    export CXX="mpicxx"
+    cd /usr/local/src/
+    wget http://www.fftw.org/fftw-3.3.9.tar.gz
+    tar xzvf fftw-3.3.9.tar.gz
+    mkdir -p /usr/local/fftw/
+    export FFTW3=/usr/local/fftw/
+    cd fftw-3.3.9
+    ./configure --enable-mpi --prefix=${FFTW3}
+    make 
+    make install
+
+    cd ..
+    rm -rf fftw-3.3.9.tar.gz
+    rm -rf fftw-3.3.9
+    echo "\n --- END POST ---\n"
+
+%test
+    echo "\n--- BEGIN TEST ---\n"
+
+    #echo "PATH=$PATH"
+    #echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH\n"
+
+    ## Check that lstopo (part of hwloc) can be found
+    #if [ -n $(which lstopo) ]; then
+    #    echo "SUCCESS: for HWLoc lstopo found in \"$(which lstopo)\""
+    #    echo "lstopo -v --no-io\n$(lstopo -v --no-io)\n"
+    #else
+    #    echo "ERROR: lstopo not found. Container build failed"
+    #    exit 1
+    #fi
+
+    ## Check that ucx_info can be found
+    #if [ -n $(which ucx_info) ]; then
+    #    echo "SUCCESS: ucx_info found in \"$(which ucx_info)\""
+    #    echo "ucx_info -c\n$(ucx_info -c)\n"
+    #else
+    #    echo "ERROR: ucx_info not found. Container build failed"
+    #    exit 1
+    #fi
+
+    ## Check that pmix_info can be found
+    #if [ -n $(which pmix_info) ]; then
+    #    echo "SUCCESS: pmix_info found in \"$(which pmix_info)\""
+    #    echo "pmix_info\n$(pmix_info)\n"
+    #else
+    #    echo "ERROR: pmix_info not found. Container build failed"
+    #    exit 1
+    #fi
+
+    ## Check that nvcc can be found
+    #if [ -n $(which nvcc) ]; then
+    #    echo "SUCCESS: nvcc found in \"$(which nvcc)\"\n"
+    #else
+    #    echo "ERROR: nvcc not found. Container build failed"
+    #    exit 1
+    #fi
+
+    ## Check that nvcc is using the correct version of CUDA
+    #nvcc --version | grep "11.1."
+    #if [ $? -eq 0 ]; then
+    #    echo "SUCCESS: Correct CUDA version V11.1.x found \n"
+    #else
+    #    echo "ERROR: Incorrect CUDA version found, should be V11.1.x"
+    #    echo "nvcc --version\n$(nvcc --version)"
+    #    exit 1
+    #fi
+
+    ## Check that mpi compilers can be found
+    #if [ -n $(which mpic++) ]; then
+    #    echo "SUCCESS: mpic++ found in \"$(which mpic++)\"\n"
+    #else
+    #    echo "ERROR: mpic++ not found. Container build failed"
+    #    exit 1
+    #fi
+
+    ## Check that mpi is using NVHPC compilers
+    #mpic++ --version | grep "nvc++"
+    #if [ $? -eq 0 ]; then
+    #    echo "SUCCESS: OpenMPI is using NVHPC compilers"
+    #    echo "mpic++ --version $(mpic++ --version)\n"
+    #else
+    #    echo "ERROR: OpenMPI is using different compilers"
+    #    echo "mpic++ --version\n$(mpic++ --version)"
+    #    exit 1
+    #fi
+
+    echo "--- END TEST ---\n"
+
+%environment
+    # NVHPC related variables
+    export NVCOMPILERS=/opt/nvidia/hpc_sdk/Linux_x86_64/20.11/compilers
+    #export MPIPATH=/opt/nvidia/hpc_sdk/Linux_x86_64/20.11/comm_libs/openmpi4/openmpi-4.0.5
+    # Extra paths for use in some scripts
+    export CUDA_ROOT_PATH=/opt/nvidia/hpc_sdk/Linux_x86_64/20.11/cuda/11.1
+    export NVHPC_ROOT_PATH=$NVCOMPILERS
+
+    # Update paths
+    export PATH=$NVCOMPILERS/bin:$CUDA_ROOT_PATH/bin:/usr/local/fftw/bin/:$PATH
+    export LD_LIBRARY_PATH=$NVCOMPILERS/lib:$CUDA_ROOT_PATH/lib64:/usr/local/lib:/usr/local/lib/openmpi:/usr/lib$LD_LIBRARY_PATH
+    export MANPATH=/usr/local/man:$NVCOMPILERS/man
+    export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/fftw/lib/
+    #export TMPDIR=/temp
